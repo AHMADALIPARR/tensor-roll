@@ -1,0 +1,9 @@
+# Tensor Roll — Recursive CUDA-Q Model Quantizer
+# Copyright (C) 2026 SnapKitty Collective
+# SPDX-License-Identifier: AGPL-3.0-or-later
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
