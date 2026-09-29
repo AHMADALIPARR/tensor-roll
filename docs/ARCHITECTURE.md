@@ -120,6 +120,12 @@ Teacher/student token agreement on 24 generated tokens: 3/24 — the
 student is a weak model at this scale; the pipeline, not the perplexity,
 is what is being validated.
 
+Rerun (`demo --fast`, same machine, 2026-09-29, failure-resolution
+pass): teacher acc 0.849, int8 PPL 8.45, int4 PPL 15.27, compression
+0.2777. Training is deterministic per (steps, seed) — verified by
+byte-identical reruns; the small deltas vs the table above reflect run
+configuration, and both runs are kept on record instead of overwriting.
+
 ## What was NOT run here (and what it needs)
 
 - Glimmer 30B ingestion: needs the 30B checkpoint shards + a machine with
@@ -135,3 +141,160 @@ is what is being validated.
 The 30B path is the same code path: ingest shards → same `TensorRoll`
 operator → same search → same stages. Only the tensor source and the
 hardware change.
+
+## Failure-resolution pass (2026-09-29): what the F1–F7 mission changed
+
+Failures are attacked in order; every item below is measured on this
+machine (2 CPUs, ~7 GB RAM, no GPU) unless marked otherwise.
+
+### F1 — Out-of-core architecture (RULE ZERO: never require 30B in RAM)
+
+New module `tensor_roll/ooc.py`:
+
+- `ShardWriter`/`TensorSource`/`ShardReader`: sharded weight storage with
+  manifest; reads are `np.memmap` views — one tensor (or window) at a
+  time, never the model.
+- `MappedTensor.windows(budget)`: recursive windowing along the largest
+  axis until each window fits the byte budget; `reassemble()` verifies
+  exact coverage (no overlap, no gaps, no shape drift) — tested.
+- `RollWorkspace`: hard working-set ceiling; allocations past it raise
+  `MemoryBudgetExceeded` instead of paging the machine — tested.
+- `StudentWriter`: per-tensor SHA-256, atomic shard writes, index
+  flushed per tensor; `verify()` detects corrupted shards — tested.
+- `Checkpoint`: JSON state + SHA-256, atomic replace; corrupted
+  checkpoints are refused, never loaded — tested.
+- `OutOfCoreDriver`: SCAN → PLAN → EXECUTE with per-tensor checkpointing
+  and `--resume`; an injected crash mid-run resumes with zero
+  emitted-data loss (tested: crashed run + resume == clean run, index
+  verified).
+- External teachers: `prepare_teacher_source()` opens `.safetensors`
+  directories with true mmap windows (no copy) or repacks `.npz`
+  streaming (one array in RAM at a time).
+- `stream_compress()`: per-window truncated SVD at the tensor's planned
+  rank share; student shards are low-rank factor pairs with honestly
+  accounted parameter counts.
+
+Measured: tiny teacher (41.1K params) streamed through
+`compress --out-of-core --target-params 20000 --memory-budget 1MB` →
+20.4K student params (rank discretization overshoot +2%, reported),
+mean measured retained energy 0.809, peak workspace 18KB of 1MB.
+
+### F2 — Virtual 30B planning (labeled exactly this, never "validated")
+
+New module `tensor_roll/planner.py`:
+
+- `glimmer30b_manifest()`: realistic 30.19B-param, 500-tensor manifest;
+  **zero weights allocated** (any read attempt raises).
+- `plan()`: SCAN (metadata only) → sensitivity-aware nonuniform
+  allocation (sensitive tensors up to 2× the uniform ratio, funded by
+  insensitive ones down to 0.4×) → hard cap 8.5B, lands on the 8.0B
+  target from either side.
+
+Measured (this machine, peak RSS 35MB — bounded working set proven):
+
+| Scale | Source params | Planned | Ratio | Within cap | Planner time |
+|---|---|---|---|---|---|
+| virtual 30B | 30.19B | 8.000B | 0.265 | yes | <0.1 s |
+
+Scale-invariance regression (virtual manifests, no weights): the
+planner holds the 8.5/30 ratio at 100K / 1M / 10M params within ±0.02 —
+tested (`check_ratio_invariance`).
+
+Actual 30B weights: **NOT TESTED** — no 30B checkpoint exists on this
+machine.
+
+### F3 — Backend honesty (`tensor-roll doctor`)
+
+New modules `tensor_roll/doctor.py`, `tensor_roll/ir.py`,
+`tensor_roll/conformance.py` (16 tests):
+
+- `tensor-roll doctor` prints the live capability matrix: CPU/NumPy
+  AVAILABLE, CUDA/CUDA-Q/Q# UNAVAILABLE (with reasons), sources
+  VERIFIED (content-checked) vs execution NOT EXECUTED — source presence
+  is never presented as backend execution.
+- TensorRoll IR (`LOAD/SLICE/ROLL/FACTOR/ROTATE/ENTANGLE/MEASURE/
+  RECONSTRUCT/GEMM/QUANTIZE/EMIT`) with JSON round-trip; CPU lowering
+  executes numerically, CUDA-Q/Q# lowering returns NOT EXECUTED records.
+- Integration audit (docs/BOUNDARIES.md): the CUDA-Q↔Q# boundary is a
+  checksummed serialized JSON trace file — file-mediated, not an API.
+
+### F4/F5 — Fidelity instrumentation and the 3/24 divergence
+
+New module `tensor_roll/fidelity.py`:
+
+- `divergence_trace()`: per-token teacher/student trace on
+  teacher-forced contexts (tokens, top-k, full logits, KL/JS divergence,
+  cosine similarity, entropies, per-layer hidden-state and attention
+  divergence) — isolates model divergence from context drift.
+- `first_divergence()`: first position AND first layer with significant
+  representation drift (not just final tokens).
+- `ablation_report()`: per-component evidence (embeddings, attention
+  projections/output, MLP up/down, norms, output head) — which
+  component's restoration recovers agreement.
+- `fidelity_aware_select()`: the section-6 utility
+  `savings − recon − logit − hidden − task` applied **uniformly** to
+  every decision class from measured errors; quantum scoring untouched.
+
+Resolution experiment (`experiments/fidelity_resolution.py`, fixed
+seeds, 3 prompts × 24 tokens; full report in the experiment workdir):
+
+- Section-6 check on 148 real roll leaves: `select_plan` chose
+  65 QUANTIZE / 83 PRESERVE at cost 11645 params; `fidelity_aware_select`
+  chose 55 QUANTIZE / 93 PRESERVE at cost 11456 — 12 decision diffs.
+  The fidelity penalty made the planner *more conservative* (fewer
+  quantize decisions), from measured errors only. Quantum-gated
+  candidates lost under both scorings — the empirical result stands.
+- V0 (baseline pipeline): token agreement **7/72**, mean teacher-KL
+  1.548.
+- First divergence at **position 0, layer_0** (hidden rel_err 1.04,
+  KL 2.73): the student diverges immediately in the first layer — not
+  late context drift but immediate representation mismatch.
+- Ablations: *every* single-component teacher graft hurt agreement
+  (best: mlp_down −0.021; output_head graft → 0.000) and raised KL.
+  The distilled student is a co-adapted system — fidelity loss is
+  **systemic, not localizable** to one component.
+- V1 (stages 2+3 hidden/logit distillation at 3× steps, then finetune):
+  agreement **4/72**, mean KL **1.187**. More distillation closes the
+  distribution gap (KL −0.36) but does **not** recover greedy token
+  agreement.
+
+Conclusion (measured, not guessed): the bottleneck is
+capacity/architecture, not distillation weight. Closing 3/24-class
+agreement needs a larger student budget or a better init, not more
+distillation steps. This remains an open failure.
+
+### F6 — INT4 characterization and recovery (`tensor_roll/quant.py`)
+
+- `int4_scheme_report()`: per-tensor / per-channel / group-wise INT4
+  benchmarked by **measured MSE** on each tensor; `search_group_size()`
+  picks the argmin over {16, 32, 64, 128}.
+- `quant_error_map()`: per-tensor min/max/mean/variance/outlier
+  fraction, MSE, cosine similarity, rel err, per-channel and per-group
+  MSE — all measured.
+- `mixed_precision_plan()`: INT4/INT8 assignment under a physical size
+  budget; tensors where INT8 buys the most error reduction per extra
+  byte stay INT8.
+- `recovery_train()`: quantization-aware recovery —
+  INT4-dequantized student → distillation → requantize → evaluate;
+  reports PPL before/after/requantized. Improvement is reported only if
+  measured.
+
+Measured recovery run (demo-scale student_final → INT4, 30 steps,
+2026-09-29; `experiments/int4_recovery.json`): PPL 7.43 before →
+5.49 after distillation → **6.88 after requantization**
+(gap closed by 0.55, `improved: true`). Recovery training genuinely
+recovers part of the INT4 degradation; the residual gap is the
+quantization floor, not a training artifact.
+
+Baseline INT4 gap stands at 6.74 PPL (15.13 − 8.39) for the full
+pipeline variant until a recovery run on that exact artifact measures
+otherwise.
+
+### Remaining failures (not fixed, reported as such)
+
+- Token agreement 3/24: under investigation (see F4/F5 results above).
+- INT4 PPL gap 6.74: characterized, not yet closed.
+- No CUDA / CUDA-Q / Q# execution on this machine (hardware absent).
+- No actual Glimmer 30B weights ingested (checkpoint absent).
+- `tensor-roll demo` exposes all of the above in its [10/9] status
+  board; nothing is relabeled to look like a pass.

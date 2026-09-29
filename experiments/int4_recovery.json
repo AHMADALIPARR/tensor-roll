@@ -1,0 +1,10 @@
+{
+  "steps": 30,
+  "ppl_before": 7.4307143325561995,
+  "ppl_after_train": 5.489463114355006,
+  "ppl_after_requant": 6.883665882879365,
+  "gap_before": 1.9412512182011934,
+  "gap_delta": 0.5470484496768346,
+  "improved": true,
+  "elapsed_s": 3.1367221489999793
+}

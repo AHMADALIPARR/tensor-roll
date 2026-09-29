@@ -1,0 +1,144 @@
+{
+  "protocol": "V0 baseline vs V1 focused-distillation",
+  "prompts": [
+    [
+      3,
+      1,
+      4,
+      1
+    ],
+    [
+      7,
+      7,
+      2,
+      9
+    ],
+    [
+      0,
+      5,
+      5,
+      0
+    ]
+  ],
+  "n_tokens": 24,
+  "section6": {
+    "n_leaves": 148,
+    "baseline_decisions": {
+      "QUANTIZE": 65,
+      "PRESERVE": 83
+    },
+    "fidelity_aware_decisions": {
+      "QUANTIZE": 55,
+      "PRESERVE": 93
+    },
+    "n_decision_diffs": 12,
+    "baseline_cost": 11645.0,
+    "fidelity_cost": 11456.0
+  },
+  "V0": {
+    "agreement": "7/72",
+    "agree_frac": 0.09722222222222222,
+    "mean_kl": 1.547805292394603
+  },
+  "trace_V0": {
+    "agreement": "5/24",
+    "first_divergence": {
+      "position": 0,
+      "teacher_token": 30,
+      "student_token": 4,
+      "kl_div": 2.7323540578677252,
+      "js_div": 0.4399995705020577,
+      "first_diverging_layer": "layer_0",
+      "layer_hidden_rel_err": 1.0380715313927222,
+      "layer_attn_div": 0.1767730414867401,
+      "all_layer_hidden_rel_err": {
+        "layer_0": 1.0380715313927222
+      },
+      "above_hidden_thresh": {
+        "layer_0": 1.0380715313927222
+      }
+    },
+    "mean_kl": 2.5741920989727904,
+    "mean_js": 0.43385868451562576
+  },
+  "ablation_V0": [
+    {
+      "component": "baseline(student)",
+      "agreement": 0.10416666666666667,
+      "mean_kl": 2.337756615069645,
+      "delta_agree": 0,
+      "n_swapped": 0
+    },
+    {
+      "component": "mlp_down",
+      "agreement": 0.08333333333333333,
+      "mean_kl": 3.0453086743936697,
+      "delta_agree": -0.020833333333333343,
+      "delta_kl": 0.7075520593240245,
+      "n_swapped": 2
+    },
+    {
+      "component": "normalization",
+      "agreement": 0.0625,
+      "mean_kl": 3.8407641291009362,
+      "delta_agree": -0.04166666666666667,
+      "delta_kl": 1.503007514031291,
+      "n_swapped": 6
+    },
+    {
+      "component": "mlp_up",
+      "agreement": 0.041666666666666664,
+      "mean_kl": 3.3130315933929992,
+      "delta_agree": -0.0625,
+      "delta_kl": 0.9752749783233541,
+      "n_swapped": 2
+    },
+    {
+      "component": "embeddings",
+      "agreement": 0.020833333333333332,
+      "mean_kl": 3.8539798822845035,
+      "delta_agree": -0.08333333333333334,
+      "delta_kl": 1.5162232672148583,
+      "n_swapped": 1
+    },
+    {
+      "component": "attention_projections",
+      "agreement": 0.020833333333333332,
+      "mean_kl": 3.8425005798316954,
+      "delta_agree": -0.08333333333333334,
+      "delta_kl": 1.5047439647620502,
+      "n_swapped": 6
+    },
+    {
+      "component": "attention_output",
+      "agreement": 0.020833333333333332,
+      "mean_kl": 3.4268810943999513,
+      "delta_agree": -0.08333333333333334,
+      "delta_kl": 1.089124479330306,
+      "n_swapped": 2
+    },
+    {
+      "component": "output_head",
+      "agreement": 0.0,
+      "mean_kl": 2.535711207020847,
+      "delta_agree": -0.10416666666666667,
+      "delta_kl": 0.19795459195120202,
+      "n_swapped": 2
+    }
+  ],
+  "V1": {
+    "agreement": "2/72",
+    "agree_frac": 0.027777777777777776,
+    "mean_kl": 1.2794614517510858
+  },
+  "delta_agree": -0.06944444444444445,
+  "delta_kl": -0.26834384064351724,
+  "V1b": {
+    "agreement": "4/72",
+    "agree_frac": 0.05555555555555555,
+    "mean_kl": 1.1872056255483905
+  },
+  "V1b_note": "V1 measured student_distilled.npz without finetune; V1b reruns finetune so V0 vs V1b differ only in the extra hidden/logit distillation stages.",
+  "delta_agree_V1b": -0.04166666666666667,
+  "delta_kl_V1b": -0.3605996668462126
+}
