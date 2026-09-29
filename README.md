@@ -55,6 +55,59 @@ or `unavailable` — so a backend is never claimed that wasn't actually executed
 
 ![Tensor Roll architecture](docs/img/architecture.png)
 
+## A novel method, executed
+
+Tensor Roll is not a compression proposal — it is a compression method that
+runs. What is novel is the composition, and every piece of it exists as code
+in this repository:
+
+**1. The recursive `TensorRoll` operator is the compression primitive.**
+Most quantizers apply one fixed recipe (prune, quantize, hope).
+`TensorRoll(T, axis, depth, rank, quantum_policy)` — implemented in
+`tensor_roll/core.py` — recursively partitions every tensor, measures each
+partition (norm, SVD rank, entropy, variance, spectral contribution,
+reconstruction error), and *searches* a representation per region from eight
+decision classes: `PRESERVE`, `QUANTIZE`, `FACTORIZE`, `MERGED`, `ROUTED`,
+`RECONSTRUCTED`, `PRUNED`, `QUANTUM-ENCODED`. The decision is data-driven,
+per region, per recursion level — executed by `tensor-roll roll`.
+
+![The TensorRoll operator](docs/img/flow-operator.png)
+
+**2. Rule Zero: the model is never required in RAM.**
+`tensor_roll/ooc.py` streams the teacher through sharded, memory-mapped
+windows with a hard working-set ceiling (`--memory-budget`), explicit
+eviction, and crash-safe checkpoint/resume. A 30.19B-parameter manifest is
+planned to an 8.000B target in under 0.1 s at 35 MB peak RSS with zero
+weights allocated — the planner reasons over metadata, not tensors.
+
+**3. SCAN → PLAN → EXECUTE solves the budget globally.**
+`tensor_roll/planner.py` scans cheaply, then allocates the ≤ 8.5B budget
+across all tensors with a sensitivity-aware greedy knapsack over measured
+(cost, retained-energy) pairs — budget flows non-uniformly to the tensors
+that earn it — before streaming execution begins. One global plan, not
+greedy layer-by-layer heuristics.
+
+**4. Heterogeneous dispatch with honest backend states.**
+`tensor_roll/boundary.py` lowers one backend-neutral TensorRoll IR
+(`LOAD · ROLL · GEMM · QUANTIZE · EMIT`, `tensor_roll/ir.py`) to CPU-NumPy,
+CUDA, CUDA-Q, and Q# (`cuda/`, `cudaq/`, `qsharp/`). `tensor-roll doctor`
+(`tensor_roll/doctor.py`) probes every backend at runtime and reports
+`AVAILABLE` / `UNAVAILABLE` / `NOT EXECUTED` per invocation — source present
+is never reported as backend executed.
+
+![Honest heterogeneous dispatch](docs/img/flow-dispatch.png)
+
+**5. The `.trq` artifact is versioned, checksummed, and self-describing.**
+`tensor_roll/trq.py` writes `TRQ1` containers: JSON header, per-tensor index
+with dtype/quant codes, codebooks, per-tensor and file-level SHA-256, and
+provenance records. Corrupt or tampered artifacts are rejected on load —
+verified by round-trip tests across all five variants
+(FP32 / FP16 / BF16 / INT8 / INT4).
+
+Executed means: 70/70 tests green, 14/14 CLI commands live, and every number
+in the [Measured benchmarks](#measured-benchmarks) gallery below was produced
+by running this code on a real machine.
+
 ## Requirements
 
 Python 3.10+ and NumPy. CPU + NumPy runs everywhere; CUDA, CUDA-Q, and Q#
@@ -84,6 +137,8 @@ Tensor Roll — Recursive CUDA-Q Model Quantizer
 ```
 
 ## Quickstart
+
+![Tensor Roll pipeline](docs/img/flow-pipeline.png)
 
 Check your backends, then run a tiny end-to-end pass:
 
@@ -414,6 +469,26 @@ on this machine (2 CPUs, 7 GB RAM, no GPU) — nothing estimated:
 | Structural planning | virtual 30.19B-param manifest → **8.000B** plan, < 0.1 s, 35 MB peak RSS |
 | `.trq` round-trip | all variants verified, checksums enforced |
 | Sandbox | allow demonstrated, deny demonstrated, audit log written |
+
+## Measured benchmarks
+
+Every chart below plots numbers measured by running the pipeline and the
+test suite on this machine (2 CPUs, 7 GB RAM, no GPU) — nothing estimated:
+
+![Compression — measured](docs/img/metrics-compression.png)
+*Validation compression: teacher 41.1K → student 11.4K params (27.8%),
+against the 28.3% target ratio (8.5B / 30B).*
+
+![Student quality — measured perplexity](docs/img/metrics-quality.png)
+*Measured student perplexity: INT8 8.39 vs INT4 15.13 — presented as recorded.*
+
+![Structural scale test — virtual 30B](docs/img/metrics-scale.png)
+*Virtual 30B structural test: 30.19B-param manifest → 8.000B plan in < 0.1 s,
+35 MB peak RSS, zero weights allocated.*
+
+![Verification suite — measured](docs/img/metrics-suite.png)
+*70/70 tests pass, 14/14 CLI commands live, 5/5 `.trq` variants round-trip
+verified, crash-resume recovery byte-identical.*
 
 ## Layout
 
