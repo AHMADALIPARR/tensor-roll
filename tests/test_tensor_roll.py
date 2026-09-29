@@ -270,6 +270,20 @@ class TestModel(unittest.TestCase):
         self.assertLess(l1, l0)
 
 
+    def test_tensor_stats_measured(self):
+        cfg = M.Config(vocab=16, d=16, heads=2, layers=1, dff=32, seq=8)
+        rng = np.random.default_rng(16)
+        params = M.init_params(rng, cfg)
+        stats = M.measure_tensor_stats(params, cfg, batches=2, batch=16)
+        self.assertEqual(set(stats), set(params))
+        for k, s in stats.items():
+            self.assertTrue(np.isfinite(s["grad_norm"]))
+            self.assertTrue(np.isfinite(s["grad_rel"]))
+            if s["act_rms"] is not None:
+                self.assertTrue(np.isfinite(s["act_rms"]))
+                self.assertGreater(s["act_rms"], 0)
+
+
 class TestDistill(unittest.TestCase):
     def test_all_losses_finite(self):
         cfg_t = M.Config(vocab=16, d=16, heads=2, layers=2, dff=32, seq=8)

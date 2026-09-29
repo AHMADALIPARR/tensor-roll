@@ -137,6 +137,7 @@ def forward(params: dict, cfg: Config, ids: np.ndarray):
         cache[f"L{l}"] = c
     f, cache["lnf"] = _ln_forward(x, params["lnfg"], params["lnfb"])
     cache["f"] = f
+    cache["x_pre_lnf"] = x
     logits = f @ params["Whead"] + params["bhead"]
     return logits, cache
 
@@ -321,6 +322,73 @@ def eval_metrics(params: dict, cfg: Config, *, batches: int = 8,
         tot_correct += int((pred == ids[:, 1:]).sum())
         tot_n += batch
     return {"loss": tot_loss / batches, "accuracy": tot_correct / (tot_n * (cfg.seq - 1))}
+
+
+def _act_input(name: str, cache: dict, cfg: Config):
+    """Input activation feeding the op that owns tensor `name`, taken from
+    a real forward cache. Returns None when not attributable."""
+    if name == "emb":
+        return cache["L0"]["x_prev"]
+    if name in ("Whead", "bhead"):
+        return cache["f"]
+    if name in ("lnfg", "lnfb"):
+        return cache["x_pre_lnf"]
+    if name.startswith("L"):
+        _, rest = name.split(".", 1)
+        l = name[1:].split(".")[0]
+        c = cache[f"L{l}"]
+        if rest in ("Wq", "Wk", "Wv", "bq", "bk", "bv"):
+            return c["h"]
+        if rest in ("Wo", "bo"):
+            return c["A"]
+        if rest in ("W1", "b1"):
+            return c["z"]
+        if rest in ("W2", "b2"):
+            return c["a"]
+        if rest in ("ln1g", "ln1b"):
+            return c["x_prev"]
+        if rest in ("ln2g", "ln2b"):
+            return c["y"]
+    return None
+
+
+def measure_tensor_stats(params: dict, cfg: Config, batches: int = 4,
+                         batch: int = 64, seed: int = 0) -> dict:
+    """Measured per-tensor contributions over real forward/backward passes.
+
+    activation contribution: RMS of the input activation feeding each
+        tensor's op, averaged over batches (from the forward cache).
+    gradient contribution: mean Frobenius norm of the tensor's gradient,
+        plus the relative ||grad|| / ||W||.
+    Returns {tensor_name: {"act_rms": float, "grad_norm": float,
+                           "grad_rel": float}}.
+    """
+    rng = np.random.default_rng(seed)
+    acc_a, acc_g, n = {}, {}, 0
+    for _ in range(batches):
+        ids = gen_data(rng, batch, cfg)
+        logits, cache = forward(params, cfg, ids[:, :-1])
+        _, dlogits = ce_loss(logits, ids[:, 1:])
+        grads = backward(params, cfg, cache, dlogits)
+        n += 1
+        for k, W in params.items():
+            ai = _act_input(k, cache, cfg)
+            if ai is not None:
+                v = float(np.sqrt(np.mean(np.asarray(ai, dtype=np.float64) ** 2)))
+                acc_a[k] = acc_a.get(k, 0.0) + v
+            g = grads.get(k)
+            if g is not None:
+                acc_g[k] = acc_g.get(k, 0.0) + float(np.linalg.norm(g))
+    stats = {}
+    for k, W in params.items():
+        wn = float(np.linalg.norm(W))
+        gn = acc_g.get(k, 0.0) / n
+        stats[k] = {
+            "act_rms": acc_a.get(k, 0.0) / n if k in acc_a else None,
+            "grad_norm": gn,
+            "grad_rel": gn / (wn + 1e-12),
+        }
+    return stats
 
 
 # ---------------------------------------------------------------------------

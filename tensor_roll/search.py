@@ -214,9 +214,15 @@ def head_consolidation_report(teacher_params: dict, teacher_cfg: Config,
 
 
 def run_roll_analysis(teacher_params: dict, *, depth: int = 3,
-                      quantum_policy: str = "off", rank: int = 0):
+                      quantum_policy: str = "off", rank: int = 0,
+                      stats: dict = None):
     """Run the first-class TensorRoll(T, axis, depth, rank, quantum_policy)
-    operator over every teacher tensor. Returns (trees, leaves)."""
+    operator over every teacher tensor. Returns (trees, leaves).
+
+    `stats`: optional {tensor_name: {"act_rms", "grad_norm", "grad_rel"}}
+    from model.measure_tensor_stats; attached to each leaf's metrics so the
+    search sees measured activation/gradient contributions.
+    """
     trees, leaves = {}, []
     for k in sorted(teacher_params.keys()):
         W = np.asarray(teacher_params[k])
@@ -225,5 +231,10 @@ def run_roll_analysis(teacher_params: dict, *, depth: int = 3,
                            if quantum_policy != "off" else None,
                            name=k)
         trees[k] = res["tree"]
-        leaves.extend(list(C.iter_leaves(res["tree"])))
+        for leaf in C.iter_leaves(res["tree"]):
+            if stats and k in stats:
+                leaf.metrics["act_rms"] = stats[k]["act_rms"]
+                leaf.metrics["grad_norm"] = stats[k]["grad_norm"]
+                leaf.metrics["grad_rel"] = stats[k]["grad_rel"]
+            leaves.append(leaf)
     return trees, leaves

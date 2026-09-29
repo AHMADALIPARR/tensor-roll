@@ -205,8 +205,11 @@ def cmd_roll(args):
     wdir = wd(args)
     params, cfg = _teacher(wdir)
     t0 = time.perf_counter()
+    # measured activation/gradient contributions (real fwd/bwd passes)
+    stats = M.measure_tensor_stats(params, cfg)
     trees, leaves = S.run_roll_analysis(params, depth=args.depth,
-                                        quantum_policy=args.quantum_policy)
+                                        quantum_policy=args.quantum_policy,
+                                        stats=stats)
     n_teacher = M.count_params(params)
     budget = n_teacher * args.budget_ratio
     plan = C.select_plan(leaves, budget)
